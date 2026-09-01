@@ -17,10 +17,10 @@ export const Header: React.FC<HeaderProps> = ({
 
   const chapters = [
     { label: '01 ORBIT', target: 0.0 },
-    { label: '02 APPROACH', target: 0.22 },
-    { label: '03 DESCENT', target: 0.45 },
-    { label: '04 WORKS', target: 0.65 },
-    { label: '05 SYSTEM', target: 0.82 },
+    { label: '02 APPROACH', target: 0.27 },
+    { label: '03 DESCENT', target: 0.47 },
+    { label: '04 WORKS', target: 0.67 },
+    { label: '05 SYSTEM', target: 0.83 },
     { label: '06 CONTACT', target: 0.96 },
   ];
 

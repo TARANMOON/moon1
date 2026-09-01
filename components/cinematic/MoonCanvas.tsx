@@ -17,16 +17,16 @@ export const MoonCanvas: React.FC<MoonCanvasProps> = ({
 
   return (
     <div className="fixed inset-0 w-full h-full pointer-events-none z-0 overflow-hidden bg-space-950">
-      {/* Fallback & instant poster frame */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        ref={posterRef}
-        src={posterUrl}
-        alt="Lunar Sequence Backdrop"
-        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-out ${
-          isLoaded ? 'opacity-0' : 'opacity-100'
-        }`}
-      />
+      {/* Fallback & instant poster frame - fully unmounted once canvas is ready to prevent flicker */}
+      {!isLoaded && (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img
+          ref={posterRef}
+          src={posterUrl}
+          alt="Lunar Sequence Backdrop"
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      )}
 
       {/* Primary Hardware-Accelerated 2D Canvas */}
       <canvas

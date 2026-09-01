@@ -13,7 +13,28 @@ import { DescentScene } from '@/components/sections/DescentScene';
 import { WorksScene } from '@/components/sections/WorksScene';
 import { CapabilitiesScene } from '@/components/sections/CapabilitiesScene';
 import { ContactScene } from '@/components/sections/ContactScene';
+import { withProgressGate, withProgressAndFrameGate } from './withProgressGate';
 import Lenis from 'lenis';
+import { gsap } from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+
+if (typeof window !== 'undefined') {
+  gsap.registerPlugin(ScrollTrigger);
+}
+
+const GatedOrbitHero = withProgressGate(OrbitHero, 0.005);
+const GatedApproachScene = withProgressGate(ApproachScene, 0.005);
+const GatedDescentScene = withProgressGate(DescentScene, 0.005);
+const GatedWorksScene = withProgressGate(WorksScene, 0.005);
+const GatedCapabilitiesScene = withProgressGate(CapabilitiesScene, 0.005);
+const GatedContactScene = withProgressGate(ContactScene, 0.005);
+const GatedTelemetryBar = withProgressAndFrameGate(TelemetryBar, 0.005);
+const GatedHeader = React.memo(Header);
+
+// State update intervals (ms). Canvas itself draws every RAF.
+const STATE_UPDATE_INTERVAL_MS = 50; // ~20Hz
+const PROGRESS_EPSILON = 0.0025;     // skip writes for sub-pixel progress deltas
+const FRAME_EPSILON = 1;             // skip writes for sub-frame deltas
 
 export const MoonSequence: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -22,6 +43,13 @@ export const MoonSequence: React.FC = () => {
   const assetLoaderRef = useRef<AssetLoader | null>(null);
   const rendererRef = useRef<CanvasRenderer | null>(null);
   const controllerRef = useRef<SequenceController>(new SequenceController(240));
+
+  // Refs for values consumed inside RAF without re-renders
+  const lastStateUpdateRef = useRef<number>(0);
+  const lastReportedProgressRef = useRef<number>(-1);
+  const lastReportedFrameRef = useRef<number>(-1);
+  const lastReportedChapterRef = useRef<string>('');
+  const lastCanvasFrameRef = useRef<number>(-1);
 
   const [progress, setProgress] = useState<number>(0);
   const [currentFrame, setCurrentFrame] = useState<number>(1);
@@ -38,26 +66,13 @@ export const MoonSequence: React.FC = () => {
     return 'CONTACT';
   }, []);
 
-  // Frame drawing routine
-  const renderCurrentFrame = useCallback((targetProgress: number) => {
-    if (!rendererRef.current || !assetLoaderRef.current) return;
-
-    const frameIdx = controllerRef.current.progressToFrame(targetProgress);
-    const img = assetLoaderRef.current.getFrame(frameIdx);
-
-    rendererRef.current.draw(img, frameIdx);
-    setCurrentFrame(frameIdx);
-    setProgress(targetProgress);
-    setCurrentChapter(computeChapter(targetProgress));
-  }, [computeChapter]);
-
-  // Navigate to chapter smoothly
-  const handleNavigateChapter = (targetProgress: number) => {
+  // Navigate to chapter smoothly (stable identity for memoized Header)
+  const handleNavigateChapter = useCallback((targetProgress: number) => {
     if (!containerRef.current || !lenisRef.current) return;
     const maxScroll = containerRef.current.scrollHeight - window.innerHeight;
     const targetScroll = targetProgress * maxScroll;
     lenisRef.current.scrollTo(targetScroll, { duration: 1.6 });
-  };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -74,11 +89,12 @@ export const MoonSequence: React.FC = () => {
 
     // Load initial critical tier
     loader.loadInitialTier().then(() => {
-      setIsLoaded(true);
       const initialImg = loader.getFrame(1);
       renderer.draw(initialImg, 1);
-      // Start background streaming of remaining frames
-      loader.startBackgroundPreload(5);
+      lastCanvasFrameRef.current = 1;
+      setIsLoaded(true);
+      // Aggressive background streaming of remaining frames
+      loader.startBackgroundPreload(12);
     });
 
     // 3. Initialize Lenis Smooth Scroll
@@ -91,30 +107,79 @@ export const MoonSequence: React.FC = () => {
     lenisRef.current = lenis;
 
     // 4. Scroll Tracking & RAF Loop
+    // - Drive Lenis from GSAP's ticker so motion, scroll, and any future
+    //   ScrollTrigger timelines share a single, deterministic clock.
+    // - Draw canvas at native RAF (60Hz) for smoothness.
+    // - setState throttled to ~20Hz and deduped.
     let rafId: number;
-    const onScroll = () => {
-      if (!containerRef.current) return;
+    const onLenisRaf = (time: number) => {
+      lenis.raf(time * 1000);
+    };
+    gsap.ticker.add(onLenisRaf);
+    gsap.ticker.lagSmoothing(0);
+
+    const computeScrollProgress = (): number => {
+      if (!containerRef.current) return 0;
       const scrollY = window.scrollY || window.pageYOffset;
       const maxScroll = containerRef.current.scrollHeight - window.innerHeight;
-      const currentProg = maxScroll > 0 ? Math.min(1, Math.max(0, scrollY / maxScroll)) : 0;
-      renderCurrentFrame(currentProg);
+      return maxScroll > 0 ? Math.min(1, Math.max(0, scrollY / maxScroll)) : 0;
     };
 
-    const rafLoop = (time: number) => {
-      lenis.raf(time);
-      onScroll();
-      rafId = requestAnimationFrame(rafLoop);
+    const drawFrame = (frameIdx: number) => {
+      const r = rendererRef.current;
+      const l = assetLoaderRef.current;
+      if (!r || !l) return;
+      if (frameIdx === lastCanvasFrameRef.current) return;
+      const img = l.getFrame(frameIdx);
+      if (!img) return;
+      r.draw(img, frameIdx);
+      lastCanvasFrameRef.current = frameIdx;
     };
 
-    rafId = requestAnimationFrame(rafLoop);
+    const maybeUpdateState = (now: number, currentProg: number, frameIdx: number) => {
+      if (now - lastStateUpdateRef.current < STATE_UPDATE_INTERVAL_MS) return;
+      lastStateUpdateRef.current = now;
+
+      const chapter = computeChapter(currentProg);
+      const progressChanged =
+        Math.abs(currentProg - lastReportedProgressRef.current) >= PROGRESS_EPSILON;
+      const frameChanged =
+        Math.abs(frameIdx - lastReportedFrameRef.current) >= FRAME_EPSILON;
+      const chapterChanged = chapter !== lastReportedChapterRef.current;
+
+      if (!progressChanged && !frameChanged && !chapterChanged) return;
+
+      lastReportedProgressRef.current = currentProg;
+      lastReportedFrameRef.current = frameIdx;
+      lastReportedChapterRef.current = chapter;
+
+      if (frameChanged) setCurrentFrame(frameIdx);
+      if (progressChanged) setProgress(currentProg);
+      if (chapterChanged) setCurrentChapter(chapter);
+    };
+
+    const tick = (time: number) => {
+      const currentProg = computeScrollProgress();
+      const frameIdx = controllerRef.current.progressToFrame(currentProg);
+
+      // 1. Draw canvas at full RAF rate
+      drawFrame(frameIdx);
+
+      // 2. Push to React state at throttled rate
+      maybeUpdateState(time, currentProg, frameIdx);
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
 
     // 5. Window Resize Handler
     const handleResize = () => {
       if (rendererRef.current) {
         rendererRef.current.resize();
         if (assetLoaderRef.current) {
-          const img = assetLoaderRef.current.getFrame(currentFrame);
-          rendererRef.current.draw(img, currentFrame);
+          const img = assetLoaderRef.current.getFrame(lastCanvasFrameRef.current);
+          rendererRef.current.draw(img, lastCanvasFrameRef.current);
         }
       }
     };
@@ -123,10 +188,11 @@ export const MoonSequence: React.FC = () => {
 
     return () => {
       cancelAnimationFrame(rafId);
+      gsap.ticker.remove(onLenisRaf);
       lenis.destroy();
       window.removeEventListener('resize', handleResize);
     };
-  }, [renderCurrentFrame, currentFrame]);
+  }, [computeChapter]);
 
   return (
     <div ref={containerRef} className="relative w-full h-[650vh] bg-space-950">
@@ -134,21 +200,52 @@ export const MoonSequence: React.FC = () => {
       <MoonCanvas canvasRef={canvasRef} isLoaded={isLoaded} />
 
       {/* Global Persistent Header */}
-      <Header
+      <GatedHeader
         currentChapter={currentChapter}
         onNavigateChapter={handleNavigateChapter}
       />
 
-      {/* Scene Overlays Choreographed by Scroll Progress */}
-      <OrbitHero progress={progress} />
-      <ApproachScene progress={progress} />
-      <DescentScene progress={progress} />
-      <WorksScene progress={progress} />
-      <CapabilitiesScene progress={progress} />
-      <ContactScene progress={progress} />
+      {/* Scene Overlays Choreographed by Scroll Progress (memoized, coarse-grained) */}
+      <GatedOrbitHero progress={progress} />
+      <GatedApproachScene progress={progress} />
+      <GatedDescentScene progress={progress} />
+      <GatedWorksScene progress={progress} />
+      <GatedCapabilitiesScene progress={progress} />
+      <GatedContactScene progress={progress} />
 
       {/* Global Persistent Bottom Telemetry Bar */}
-      <TelemetryBar progress={progress} currentFrame={currentFrame} />
+      <GatedTelemetryBar progress={progress} currentFrame={currentFrame} />
+
+      {/* Cinematic Loading Gate */}
+      {!isLoaded && (
+        <div
+          className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-space-950 text-white"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex flex-col items-center gap-5">
+            <div className="w-10 h-10 rounded-full border border-white/15 border-t-lunar-cyan animate-spin" />
+            <div className="text-[11px] font-mono tracking-widest-xl text-lunar-slate uppercase">
+              Initializing Lunar Sequence
+            </div>
+            <div className="text-[10px] font-mono text-lunar-muted">
+              SYNCING ORBITAL TELEMETRY
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile / repeat visitor escape hatch */}
+      {isLoaded && (
+        <button
+          onClick={() => handleNavigateChapter(0.66)}
+          className="fixed bottom-16 right-5 z-[55] hidden md:inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-space-900/70 backdrop-blur-md text-[10px] font-mono tracking-widest text-lunar-slate hover:text-white hover:border-white/25 transition-colors"
+          aria-label="Skip cinematic intro to works"
+        >
+          <span>SKIP INTRO</span>
+          <span className="text-lunar-cyan">→</span>
+        </button>
+      )}
     </div>
   );
 };

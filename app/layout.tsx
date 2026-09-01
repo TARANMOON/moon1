@@ -30,6 +30,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://taranmoon.com'),
   title: 'TARAN MOON — Creative Technologist & Systems Architect',
   description:
     'Editorial, cinematic, and technical personal portfolio. Spatial web experiences, canvas image sequences, and next-generation interactive systems.',
@@ -79,6 +80,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${inter.variable} ${syne.variable} ${jetbrainsMono.variable}`}>
+      <head>
+        <link rel="preconnect" href="/" crossOrigin="anonymous" />
+        <link
+          rel="preload"
+          as="image"
+          href="/moon/poster.jpg"
+          fetchPriority="high"
+        />
+      </head>
       <body className="bg-space-900 text-white selection:bg-lunar-cyan/20 selection:text-white">
         <div className="lunar-grain" aria-hidden="true" />
         {children}

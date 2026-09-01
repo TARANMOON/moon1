@@ -18,6 +18,7 @@ export class AssetLoader {
   private loadedCount: number = 0;
   private onProgressCallback?: (loaded: number, total: number, percentage: number) => void;
   private isBackgroundLoadingStarted = false;
+  private lastServedFrame: HTMLImageElement | null = null;
 
   constructor(totalFrames: number = 240) {
     this.totalFrames = totalFrames;
@@ -49,10 +50,24 @@ export class AssetLoader {
   public getFrame(index: number): HTMLImageElement | null {
     const img = this.imageCache.get(index);
     if (img && img.complete && img.naturalWidth > 0) {
+      this.lastServedFrame = img;
       return img;
     }
-    // If not loaded, find closest loaded frame
-    return this.getClosestLoadedFrame(index);
+    // If not loaded, HOLD the last successfully served frame instead of
+    // snapping to a nearby frame. Snapping to a random nearby frame is what
+    // produces the perceived "flicker" between non-adjacent frames.
+    return this.lastServedFrame ?? this.getFirstLoadedFrame();
+  }
+
+  private getFirstLoadedFrame(): HTMLImageElement | null {
+    if (this.imageCache.size === 0) return null;
+    for (const [, img] of this.imageCache.entries()) {
+      if (img.complete && img.naturalWidth > 0) {
+        this.lastServedFrame = img;
+        return img;
+      }
+    }
+    return null;
   }
 
   private getClosestLoadedFrame(target: number): HTMLImageElement | null {
@@ -87,12 +102,14 @@ export class AssetLoader {
       return this.loadPromises.get(clamped)!;
     }
 
+    const supportsDecode = typeof Image.prototype.decode === 'function';
+
     const promise = new Promise<HTMLImageElement>((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.src = this.getFramePath(clamped);
 
-      img.onload = () => {
+      const finalize = () => {
         this.imageCache.set(clamped, img);
         this.loadedCount++;
         if (this.onProgressCallback) {
@@ -105,8 +122,22 @@ export class AssetLoader {
         resolve(img);
       };
 
+      img.onload = () => {
+        if (supportsDecode) {
+          img
+            .decode()
+            .then(finalize)
+            .catch(() => {
+              this.imageCache.set(clamped, img);
+              this.loadedCount++;
+              resolve(img);
+            });
+        } else {
+          finalize();
+        }
+      };
+
       img.onerror = () => {
-        // Fallback or retry
         reject(new Error(`Failed to load frame ${clamped}`));
       };
     });
