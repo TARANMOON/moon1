@@ -1,0 +1,11 @@
+{
+  "totalFrames": 240,
+  "framePattern": "/moon/frames/ezgif-frame-%03d.jpg",
+  "poster": "/moon/poster.jpg",
+  "aspectRatio": 1.7777777777777777,
+  "width": 1280,
+  "height": 720,
+  "format": "jpg",
+  "fps": 30,
+  "created": "2026-08-30T09:15:00.000Z"
+}
